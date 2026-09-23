@@ -1,0 +1,150 @@
+name: Unikraft Cloud Deploy
+
+# Builds the fork into a unikernel image and deploys/updates it on
+# Unikraft Cloud (https://unikraft.cloud).
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   UKC_TOKEN            Unikraft Cloud API token (console.unikraft.cloud)
+#   MANAGEMENT_PASSWORD  Password for the CLIProxyAPI management panel
+#
+# Optional repository variables (same settings page, "Variables" tab):
+#   UKC_METRO  Metro to deploy in (default: fra)
+#   UKC_ORG    Unikraft Cloud organization used as the image namespace
+#              (default: GitHub repository owner)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.unikraft"
+      - "unikraft-entrypoint.sh"
+      - ".github/workflows/unikraft-deploy.yml"
+      - "cmd/**"
+      - "internal/**"
+      - "sdk/**"
+      - "config.example.yaml"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+concurrency:
+  group: unikraft-deploy
+  cancel-in-progress: false
+
+env:
+  UKC_METRO: ${{ vars.UKC_METRO || 'fra' }}
+  UKC_ORG: ${{ vars.UKC_ORG || github.repository_owner }}
+  INSTANCE_NAME: cliproxyapi
+  IMAGE_NAME: cliproxyapi
+  VOLUME_NAME: cliproxyapi-data
+  VOLUME_SIZE_MB: "512"
+  MEMORY_MB: "512"
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
+          MANAGEMENT_PASSWORD: ${{ secrets.MANAGEMENT_PASSWORD }}
+        run: |
+          if [ -z "$UKC_TOKEN" ]; then
+            echo "::error::Missing repository secret UKC_TOKEN. Create an API token at https://console.unikraft.cloud and add it as a secret named UKC_TOKEN."
+            exit 1
+          fi
+          if [ -z "$MANAGEMENT_PASSWORD" ]; then
+            echo "::error::Missing repository secret MANAGEMENT_PASSWORD. Choose a strong password for the CLIProxyAPI management panel and add it as a secret named MANAGEMENT_PASSWORD."
+            exit 1
+          fi
+
+      - name: Install Unikraft CLI and login
+        uses: unikraft/setup-action@v1
+        with:
+          token: ${{ secrets.UKC_TOKEN }}
+          organization: ${{ vars.UKC_ORG }}
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          # `unikraft build` uses the Dockerfile named "Dockerfile" in the
+          # build context. Assemble a temporary context that uses
+          # Dockerfile.unikraft as the active Dockerfile so the fork's
+          # original Dockerfile stays untouched.
+          ctx="$(mktemp -d)/ctx"
+          mkdir -p "$ctx"
+          cp -a . "$ctx/"
+          cp Dockerfile.unikraft "$ctx/Dockerfile"
+          unikraft build "$ctx" \
+            --build-arg "VERSION=${GITHUB_REF_NAME}" \
+            --build-arg "COMMIT=${GITHUB_SHA}" \
+            --build-arg "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "${UKC_ORG}/${IMAGE_NAME}:latest"
+
+      - name: Ensure persistent volume
+        run: |
+          set -euo pipefail
+          if unikraft volumes get "$VOLUME_NAME" -o quiet >/dev/null 2>&1; then
+            echo "Volume $VOLUME_NAME already exists"
+          else
+            unikraft volumes create --name "$VOLUME_NAME" --metro "$UKC_METRO" --size "$VOLUME_SIZE_MB" \
+              || unikraft volumes get "$VOLUME_NAME" -o quiet
+            echo "Volume $VOLUME_NAME created"
+          fi
+
+      - name: Deploy instance
+        env:
+          MANAGEMENT_PASSWORD: ${{ secrets.MANAGEMENT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if unikraft instances get "$INSTANCE_NAME" -o quiet >/dev/null 2>&1; then
+            echo "Instance $INSTANCE_NAME exists, updating"
+            unikraft instances edit "$INSTANCE_NAME" \
+              --image "${UKC_ORG}/${IMAGE_NAME}:latest" \
+              -e "DEPLOY=cloud" \
+              -e "MANAGEMENT_PASSWORD=${MANAGEMENT_PASSWORD}" \
+              -e "WRITABLE_PATH=/data"
+            # Ensure the new image is running; tolerate an in-flight restart.
+            unikraft instances restart "$INSTANCE_NAME" || true
+          else
+            echo "Instance $INSTANCE_NAME not found, creating"
+            unikraft instances create \
+              --name "$INSTANCE_NAME" \
+              --metro "$UKC_METRO" \
+              --image "${UKC_ORG}/${IMAGE_NAME}:latest" \
+              -p "443:8317/http+tls" \
+              -e "DEPLOY=cloud" \
+              -e "MANAGEMENT_PASSWORD=${MANAGEMENT_PASSWORD}" \
+              -e "WRITABLE_PATH=/data" \
+              -v "${VOLUME_NAME}:/data" \
+              --memory "$MEMORY_MB" \
+              --restart=on-failure \
+              --autostart
+          fi
+
+      - name: Deployment info
+        run: |
+          set -euo pipefail
+          sleep 5
+          {
+            echo "## Unikraft Cloud deployment"
+            echo ""
+            echo "Metro: ${UKC_METRO}, instance: ${INSTANCE_NAME}, image: ${UKC_ORG}/${IMAGE_NAME}:latest"
+            echo ""
+            echo '```'
+            unikraft instances get "$INSTANCE_NAME" -o yaml || true
+            echo '```'
+            echo ""
+            echo "The public HTTPS endpoint (port 443, TLS terminated by Unikraft Cloud) forwards to the instance on port 8317."
+            echo "Management panel: https://<fqdn>/management.html - sign in with the secret \`MANAGEMENT_PASSWORD\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Recent instance logs
+        run: |
+          sleep 10
+          timeout 30 unikraft instances logs "$INSTANCE_NAME" 2>&1 | tail -n 100 || true
