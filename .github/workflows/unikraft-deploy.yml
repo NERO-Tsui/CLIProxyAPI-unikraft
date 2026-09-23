@@ -16,6 +16,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "Kraftfile"
       - "Dockerfile.unikraft"
       - "unikraft-entrypoint.sh"
       - ".github/workflows/unikraft-deploy.yml"
@@ -32,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UKC_METRO: ${{ vars.UKC_METRO || 'fra' }}
+  UKC_METRO: ${{ vars.UKC_METRO || 'sfo' }}
   UKC_ORG: ${{ vars.UKC_ORG || github.repository_owner }}
   INSTANCE_NAME: cliproxyapi
   IMAGE_NAME: cliproxyapi
@@ -72,15 +73,9 @@ jobs:
       - name: Build image
         run: |
           set -euo pipefail
-          # `unikraft build` uses the Dockerfile named "Dockerfile" in the
-          # build context. Assemble a temporary context that uses
-          # Dockerfile.unikraft as the active Dockerfile so the fork's
-          # original Dockerfile stays untouched.
-          ctx="$(mktemp -d)/ctx"
-          mkdir -p "$ctx"
-          cp -a . "$ctx/"
-          cp Dockerfile.unikraft "$ctx/Dockerfile"
-          unikraft build "$ctx" \
+          # The root Kraftfile points `rootfs.source` at Dockerfile.unikraft,
+          # so the fork's original Dockerfile stays untouched.
+          unikraft build . \
             --build-arg "VERSION=${GITHUB_REF_NAME}" \
             --build-arg "COMMIT=${GITHUB_SHA}" \
             --build-arg "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

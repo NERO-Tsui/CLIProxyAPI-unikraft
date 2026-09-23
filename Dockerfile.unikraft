@@ -28,7 +28,9 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false \
+# Static PIE: the Unikraft Cloud runtime requires position-independent
+# executables and cannot load dynamic interpreters.
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -buildmode=pie \
     -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" \
     -o /out/CLIProxyAPI ./cmd/server/
 
