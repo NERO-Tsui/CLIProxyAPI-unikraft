@@ -10,7 +10,7 @@ name: Unikraft Cloud Deploy
 # Optional repository variables (same settings page, "Variables" tab):
 #   UKC_METRO  Metro to deploy in (default: sfo)
 #   UKC_ORG    Unikraft Cloud organization used as the image namespace
-#              (default: GitHub repository owner; lowercased for OCI refs)
+#              (default: nero; repository variables, NOT environment variables)
 
 on:
   push:
@@ -34,7 +34,7 @@ concurrency:
 
 env:
   UKC_METRO: ${{ vars.UKC_METRO || 'sfo' }}
-  UKC_ORG: ${{ vars.UKC_ORG || github.repository_owner }}
+  UKC_ORG: ${{ vars.UKC_ORG || 'nero' }}
   INSTANCE_NAME: cliproxyapi
   IMAGE_NAME: cliproxyapi
   VOLUME_NAME: cliproxyapi-data
