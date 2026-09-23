@@ -8,9 +8,13 @@ name: Unikraft Cloud Deploy
 #   MANAGEMENT_PASSWORD  Password for the CLIProxyAPI management panel
 #
 # Optional repository variables (same settings page, "Variables" tab):
-#   UKC_METRO  Metro to deploy in (default: sfo)
-#   UKC_ORG    Unikraft Cloud organization used as the image namespace
-#              (default: nero; repository variables, NOT environment variables)
+#   UKC_METRO   Metro to deploy in (default: sfo)
+#   UKC_ORG     Unikraft Cloud organization used as the image namespace
+#               (default: nero; repository variables, NOT environment variables)
+#   UKC_DOMAIN  Optional custom subdomain prefix for the public FQDN, e.g.
+#               "cliproxy" yields cliproxy.sfo.unikraft.app. Applies on
+#               instance (re)creation only - delete the instance first to
+#               switch the domain of an existing deployment.
 
 on:
   push:
@@ -35,6 +39,7 @@ concurrency:
 env:
   UKC_METRO: ${{ vars.UKC_METRO || 'sfo' }}
   UKC_ORG: ${{ vars.UKC_ORG || 'nero' }}
+  UKC_DOMAIN: ${{ vars.UKC_DOMAIN || '' }}
   INSTANCE_NAME: cliproxyapi
   IMAGE_NAME: cliproxyapi
   VOLUME_NAME: cliproxyapi-data
@@ -118,10 +123,15 @@ jobs:
             unikraft instances restart "$INSTANCE_NAME" || true
           else
             echo "Instance $INSTANCE_NAME not found, creating"
+            domain_args=()
+            if [ -n "$UKC_DOMAIN" ]; then
+              domain_args+=(--domain "$UKC_DOMAIN")
+            fi
             unikraft instances create \
               --name "$INSTANCE_NAME" \
               --metro "$UKC_METRO" \
               --image "$IMAGE_REF" \
+              "${domain_args[@]}" \
               -p "443:8317/http+tls" \
               -e "DEPLOY=cloud" \
               -e "MANAGEMENT_PASSWORD=${MANAGEMENT_PASSWORD}" \
