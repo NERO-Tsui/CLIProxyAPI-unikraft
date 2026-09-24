@@ -35,7 +35,7 @@
 |---|---|---|
 | `UKC_METRO` | `sfo` | 部署区域（美西旧金山）。改区域要删实例+卷重建，见"坑" |
 | `UKC_ORG` | `nero` | Unikraft Cloud 组织名 = 镜像命名空间。控制台 URL `/org/<名字>/` 可查 |
-| `UKC_DOMAIN` | 无（随机域名） | 自定义子域前缀，如 `cliproxy` → `cliproxy.sfo.unikraft.app`。只对"新建实例"生效，切换已有部署的域名需先删实例再跑一次 workflow |
+| `UKC_DOMAIN` | 无（随机域名） | 自定义子域前缀，如 `cpa` → `cpa.sfo.unikraft.app`。⚠ 只认 **Variables 标签页底部 "Actions variables" 的 Repository variable**（对应 workflow 的 `vars.*`）；顶部 Environment variables 和 Secrets 标签页加了都读不到。需配合手动触发勾选 `recreate_instance` 生效，见第七节"切换自定义域名" |
 
 ## 三、部署要点（流水线做了什么）
 
@@ -62,7 +62,7 @@
 | 内存 | 改 workflow 里 `MEMORY_MB`（当前 512，MiB），下次部署生效 |
 | 卷大小 | 改 `VOLUME_SIZE_MB`（当前 512，MiB）。只影响新建卷 |
 | 休眠 | 当前 `--scale-to-zero policy=off` 常驻运行（7×24 计费）。想省钱改回 `policy=on,cooldown-time=<毫秒>`，闲时缩零、请求毫秒级唤醒 |
-| 自定义子域 | Variables 加 `UKC_DOMAIN`，删实例后重跑（卷保留，凭据不丢，只换域名） |
+| 自定义子域 | Repository variable 加 `UKC_DOMAIN`（如 `cpa`）→ Actions → Run workflow → 勾选 **recreate_instance**（自动删实例重建，卷原样挂回，凭据不丢，只换域名）。详见第七节"切换自定义域名" |
 | 完全自有域名 | 用 `unikraft certificates create` 上传证书 + DNS 解析，进阶用法 |
 | 镜像 tag | 当前固定 `:latest`，每次构建覆盖 |
 
@@ -81,6 +81,8 @@
 11. **`.sh` 脚本必须 LF 行尾**：CRLF 会让 unikernel 里的 sh 报错。仓库 autocrlf 提交时自动转 LF；若在 Windows 手工编辑注意别引入 CRLF
 12. **管理面板资源是运行时从 GitHub 下载的**：首次冷启动需要几秒；镜像里已带 CA 证书所以出站 HTTPS 正常
 13. **并发部署**：workflow 有 concurrency 组，同时多次触发会排队不会互相覆盖
+14. **UKC_DOMAIN 放错位置不生效**：workflow 的 `${{ vars.* }}` 只读 Variables 标签页底部的 **Repository variables**。放错的三种情况都读不到——Variables 标签页顶部的 Environment variables（需 job 声明 `environment:`，本 workflow 未声明）、Secrets 标签页的 Repository secrets、顶部的 Environment secrets
+15. **自定义子域被他人占用**：create 步骤直接红叉失败，Actions 日志显示平台报错（`set -euo pipefail` 保证不会静默）。recreate 模式下旧实例已删，回退办法见第七节"切换自定义域名"末尾
 
 ## 六、已部署镜像与资源的删除方式
 
@@ -121,6 +123,19 @@ unikraft images delete nero/cliproxyapi:latest
 - **改了本仓库部署文件/上游同步后自动部署**：push 到 `main` 命中触发路径即自动跑；或在 Actions 页面手动 Run workflow
 - **与上游同步**：GitHub 仓库页面 Sync fork → 更新 `main` → 自动触发重新构建部署（新增文件与上游零冲突）
 - **只改配置/加账号**：无需重新部署，面板操作直接落卷生效
+
+### 切换自定义域名
+
+域名（service group 的 FQDN）属于 create-only 字段，已存在的实例无法直接修改，需要删除并重建实例：
+
+1. **确认变量位置**：Settings → Secrets and variables → Actions → **Variables 标签页底部 "Actions variables"** → `UKC_DOMAIN=cpa`。若之前加在 Environment variables 或 Secrets 标签页，删掉错误条目后在此处重建（放错位置的值 workflow 读不到）
+2. **手动触发重建**：Actions → Unikraft Cloud Deploy → Run workflow → 勾选 **recreate_instance** → Run。流程自动完成：删旧实例 → 清理旧服务组（随机域名随之释放）→ 等待卷释放 → 以新域名重建实例（卷原样挂回，api-keys 和已添加账号全部保留）。整个过程约 1-2 分钟中断
+3. **验证**：run summary 中实例 `service.domains` 应为 `cpa.sfo.unikraft.app`；`curl https://cpa.sfo.unikraft.app/v1/models` 返回模型列表
+4. **更新客户端**：把所有客户端的 base URL 从旧随机域名改为 `https://cpa.sfo.unikraft.app`（旧域名随之失效）
+
+> **若前缀已被占用**：create 步骤红叉失败并在日志显示平台报错，此时旧实例已删。回退：删除/清空 `UKC_DOMAIN` 变量，再勾选 recreate_instance 重跑（恢复随机域名服务）；或换个前缀重试。平台没有跨账户域名占用预检接口，只能创建时试错。
+>
+> **换 metro（区域）**也用 recreate_instance，但额外要求：旧 metro 的卷不能跨区挂载，须先删卷（⚠ 凭据丢失，需重新登录各账号），改 `UKC_METRO` 后勾选 recreate 重跑（workflow 会自动在新区域重建卷）。
 
 ### 回滚
 

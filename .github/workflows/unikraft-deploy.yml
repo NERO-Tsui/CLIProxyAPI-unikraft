@@ -13,8 +13,12 @@ name: Unikraft Cloud Deploy
 #               (default: nero; repository variables, NOT environment variables)
 #   UKC_DOMAIN  Optional custom subdomain prefix for the public FQDN, e.g.
 #               "cliproxy" yields cliproxy.sfo.unikraft.app. Applies on
-#               instance (re)creation only - delete the instance first to
-#               switch the domain of an existing deployment.
+#               instance (re)creation only - run the workflow manually with
+#               "recreate_instance" checked to switch an existing deployment.
+#
+# Manual run: checking the "recreate_instance" input deletes and recreates
+# the instance (required to apply create-only fields such as the service
+# domain). Regular pushes update the existing instance in place.
 
 on:
   push:
@@ -31,6 +35,11 @@ on:
       - "go.mod"
       - "go.sum"
   workflow_dispatch:
+    inputs:
+      recreate_instance:
+        description: 'Delete and recreate the instance (required to apply create-only fields such as the service domain or metro)'
+        type: boolean
+        default: false
 
 concurrency:
   group: unikraft-deploy
@@ -109,10 +118,42 @@ jobs:
       - name: Deploy instance
         env:
           MANAGEMENT_PASSWORD: ${{ secrets.MANAGEMENT_PASSWORD }}
+          RECREATE: ${{ inputs.recreate_instance == true }}
         run: |
           set -euo pipefail
+
+          instance_exists=false
           if unikraft instances get "$INSTANCE_NAME" -o quiet >/dev/null 2>&1; then
-            echo "Instance $INSTANCE_NAME exists, updating"
+            instance_exists=true
+          fi
+
+          do_create=false
+          if [ "$instance_exists" = false ]; then
+            echo "Instance $INSTANCE_NAME not found, will create"
+            do_create=true
+          elif [ "$RECREATE" = "true" ]; then
+            echo "Recreate requested, replacing instance $INSTANCE_NAME"
+            # Capture the old service group so it can be cleaned up; its
+            # random FQDN disappears with it. Output may be an object or a
+            # one-element array depending on CLI version.
+            old_svc="$(unikraft instances get "$INSTANCE_NAME" -o json 2>/dev/null \
+              | jq -r 'if type=="array" then (.[0] // {}) else . end | (.service.name // "")' \
+              || true)"
+            unikraft instances delete "$INSTANCE_NAME"
+            if [ -n "$old_svc" ]; then
+              unikraft services delete "$old_svc" || true
+            fi
+            # Give the volume time to detach before reattaching it to the
+            # new instance.
+            for _ in $(seq 1 30); do
+              unikraft volumes get "$VOLUME_NAME" 2>/dev/null | grep -qw available && break
+              sleep 2
+            done
+            do_create=true
+          fi
+
+          if [ "$do_create" != "true" ]; then
+            echo "Instance $INSTANCE_NAME exists, updating in place"
             unikraft instances edit "$INSTANCE_NAME" \
               --image "$IMAGE_REF" \
               --scale-to-zero "policy=off" \
@@ -122,7 +163,7 @@ jobs:
             # Ensure the new image is running; tolerate an in-flight restart.
             unikraft instances restart "$INSTANCE_NAME" || true
           else
-            echo "Instance $INSTANCE_NAME not found, creating"
+            echo "Creating instance $INSTANCE_NAME"
             domain_args=()
             if [ -n "$UKC_DOMAIN" ]; then
               domain_args+=(--domain "$UKC_DOMAIN")
