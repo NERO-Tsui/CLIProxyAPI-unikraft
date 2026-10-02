@@ -9,7 +9,7 @@
 | 文件 | 作用 |
 |---|---|
 | `Dockerfile.unikraft` | Unikraft 专用镜像构建：`CGO_ENABLED=0 -buildmode=pie` 纯静态 PIE 二进制 + Alpine 最小根文件系统（含 CA 证书、时区数据）。**unikernel 根文件系统只读且无动态链接器，必须静态 PIE**；CGO 关闭意味着动态库插件不可用（默认配置本来也没开） |
-| `unikraft-entrypoint.sh` | 入口脚本：首次启动时把 `config.example.yaml` 种子化到持久卷 `/data/config.yaml`（auth-dir 改写为 `/data/auths`），再以 `--config /data/config.yaml` 启动服务。配置、OAuth 凭据、管理面板资源全部落在卷上，重启/重新部署不丢 |
+| `unikraft-entrypoint.sh` | 入口脚本：首次启动时把 `config.example.yaml` 种子化到持久卷 `/data/config.yaml`（auth-dir 改写为 `/data/auths`），再以 `--config /data/config.yaml` 启动服务。配置、OAuth 凭据、管理面板资源全部落在卷上，重启/重新部署不丢。另含 TLS 自愈：启动前检测 `tls.enable: true` 且 cert/key 为空的不可启动配置并强制改回 false（见坑 16） |
 | `Kraftfile` | `unikraft build` 的必需入口（stable 版 CLI 不认裸 Dockerfile）：`runtime: base-compat:latest` + `rootfs.source: ./Dockerfile.unikraft` + `erofs` 只读打包 + `cmd` 指向入口脚本 |
 | `.github/workflows/unikraft-deploy.yml` | 一键构建部署流水线（详见下文） |
 | `Unikraft 部署说明.md` | 本文档 |
@@ -83,6 +83,7 @@
 13. **并发部署**：workflow 有 concurrency 组，同时多次触发会排队不会互相覆盖
 14. **UKC_DOMAIN 放错位置不生效**：workflow 的 `${{ vars.* }}` 只读 Variables 标签页底部的 **Repository variables**。放错的三种情况都读不到——Variables 标签页顶部的 Environment variables（需 job 声明 `environment:`，本 workflow 未声明）、Secrets 标签页的 Repository secrets、顶部的 Environment secrets
 15. **自定义子域被他人占用**：create 步骤直接红叉失败，Actions 日志显示平台报错（`set -euo pipefail` 保证不会静默）。recreate 模式下旧实例已删，回退办法见第七节"切换自定义域名"末尾
+16. **管理面板的 TLS/SSL 开关不能开**：TLS 由平台边缘在 443 终结（`443:8317/http+tls`），实例自身只讲 HTTP。新版面板（自动更新）的可视化配置里有 TLS 开关，会写入 v8 布局的 `server.tls`——旧版服务端不认该路径会静默落盘 `enable: true` 而不生效，**升级/同步上游后新服务端按 v8 识别并严格校验**，cert/key 为空直接拒绝启动（日志 `tls.cert or tls.key is empty`），实例崩溃循环。入口脚本已带自愈：启动前发现此组合自动改回 `enable: false`（填了真实证书路径的配置不受影响），日志出现 `repaired config: tls.enable was true...` 即修过。同理，面板若再出"开 HTTPS"类选项，在 Unikraft 部署形态下一律保持关闭
 
 ## 六、已部署镜像与资源的删除方式
 
